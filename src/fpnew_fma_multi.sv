@@ -115,12 +115,15 @@ module fpnew_fma_multi #(
   fpnew_pkg::fp_format_e src2_fmt_q;
   fpnew_pkg::fp_format_e dst_fmt_q;
 
+  fp_t                         pre_operand_a, pre_operand_b, pre_operand_c;
+  fpnew_pkg::fp_info_t         pre_info_a,    pre_info_b,    pre_info_c;
+  logic [2*PRECISION_BITS-1:0] pre_product;
+
   // Input pipeline signals, index i holds signal after i register stages
-  logic                  [0:NUM_INP_REGS][2:0][WIDTH-1:0]       inp_pipe_operands_q;
-  logic                  [0:NUM_INP_REGS][NUM_FORMATS-1:0][2:0] inp_pipe_is_boxed_q;
+  fp_t                   [0:NUM_INP_REGS][2:0]                  inp_pipe_operands_q;
+  fpnew_pkg::fp_info_t   [0:NUM_INP_REGS][2:0]                  inp_pipe_info_q;
+  fpnew_pkg::fp_info_t   [0:NUM_INP_REGS][2*PRECISION_BITS-1:0] inp_pipe_product_q;
   fpnew_pkg::roundmode_e [0:NUM_INP_REGS]                       inp_pipe_rnd_mode_q;
-  fpnew_pkg::operation_e [0:NUM_INP_REGS]                       inp_pipe_op_q;
-  logic                  [0:NUM_INP_REGS]                       inp_pipe_op_mod_q;
   fpnew_pkg::fp_format_e [0:NUM_INP_REGS]                       inp_pipe_src_fmt_q;
   fpnew_pkg::fp_format_e [0:NUM_INP_REGS]                       inp_pipe_src2_fmt_q;
   fpnew_pkg::fp_format_e [0:NUM_INP_REGS]                       inp_pipe_dst_fmt_q;
@@ -132,11 +135,10 @@ module fpnew_fma_multi #(
   logic [0:NUM_INP_REGS] inp_pipe_ready;
 
   // Input stage: First element of pipeline is taken from inputs
-  assign inp_pipe_operands_q[0] = operands_i;
-  assign inp_pipe_is_boxed_q[0] = is_boxed_i;
+  assign inp_pipe_operands_q[0] = {pre_operand_c, pre_operand_b, pre_operand_a};
+  assign inp_pipe_info_q[0]     = {pre_info_c, pre_info_b, pre_info_a};
+  assign inp_pipe_product_q[0]  = pre_product;
   assign inp_pipe_rnd_mode_q[0] = rnd_mode_i;
-  assign inp_pipe_op_q[0]       = op_i;
-  assign inp_pipe_op_mod_q[0]   = op_mod_i;
   assign inp_pipe_src_fmt_q[0]  = src_fmt_i;
   assign inp_pipe_src2_fmt_q[0] = src2_fmt_i;
   assign inp_pipe_dst_fmt_q[0]  = dst_fmt_i;
@@ -160,10 +162,9 @@ module fpnew_fma_multi #(
     assign reg_ena = (inp_pipe_ready[i] & inp_pipe_valid_q[i]) | reg_ena_i[i];
     // Generate the pipeline registers within the stages, use enable-registers
     `FFL(inp_pipe_operands_q[i+1], inp_pipe_operands_q[i], reg_ena, '0)
-    `FFL(inp_pipe_is_boxed_q[i+1], inp_pipe_is_boxed_q[i], reg_ena, '0)
+    `FFL(inp_pipe_info_q[i+1],     inp_pipe_info_q[i],     reg_ena, '0)
+    `FFL(inp_pipe_product_q[i+1],  inp_pipe_product_q[i],  reg_ena, '0)
     `FFL(inp_pipe_rnd_mode_q[i+1], inp_pipe_rnd_mode_q[i], reg_ena, fpnew_pkg::RNE)
-    `FFL(inp_pipe_op_q[i+1],       inp_pipe_op_q[i],       reg_ena, fpnew_pkg::FMADD)
-    `FFL(inp_pipe_op_mod_q[i+1],   inp_pipe_op_mod_q[i],   reg_ena, '0)
     `FFL(inp_pipe_src_fmt_q[i+1],  inp_pipe_src_fmt_q[i],  reg_ena, fpnew_pkg::fp_format_e'(0))
     `FFL(inp_pipe_src2_fmt_q[i+1], inp_pipe_src2_fmt_q[i], reg_ena, fpnew_pkg::fp_format_e'(0))
     `FFL(inp_pipe_dst_fmt_q[i+1],  inp_pipe_dst_fmt_q[i],  reg_ena, fpnew_pkg::fp_format_e'(0))
@@ -172,7 +173,6 @@ module fpnew_fma_multi #(
     `FFL(inp_pipe_aux_q[i+1],      inp_pipe_aux_q[i],      reg_ena, AuxType'('0))
   end
   // Output stage: assign selected pipe outputs to signals for later use
-  assign operands_q = inp_pipe_operands_q[NUM_INP_REGS];
   assign src_fmt_q  = inp_pipe_src_fmt_q[NUM_INP_REGS];
   assign src2_fmt_q = inp_pipe_src2_fmt_q[NUM_INP_REGS];
   assign dst_fmt_q  = inp_pipe_dst_fmt_q[NUM_INP_REGS];
@@ -180,11 +180,11 @@ module fpnew_fma_multi #(
   // -----------------
   // Input processing
   // -----------------
-  logic        [NUM_FORMATS-1:0][2:0]                     fmt_sign;
-  logic signed [NUM_FORMATS-1:0][2:0][SUPER_EXP_BITS-1:0] fmt_exponent;
-  logic        [NUM_FORMATS-1:0][2:0][SUPER_MAN_BITS-1:0] fmt_mantissa;
+  logic        [NUM_FORMATS-1:0][2:0]                     pre_fmt_sign;
+  logic signed [NUM_FORMATS-1:0][2:0][SUPER_EXP_BITS-1:0] pre_fmt_exponent;
+  logic        [NUM_FORMATS-1:0][2:0][SUPER_MAN_BITS-1:0] pre_fmt_mantissa;
 
-  fpnew_pkg::fp_info_t [NUM_FORMATS-1:0][2:0] info_q;
+  fpnew_pkg::fp_info_t [NUM_FORMATS-1:0][2:0] pre_info;
 
   // FP Input initialization
   for (genvar fmt = 0; fmt < int'(NUM_FORMATS); fmt++) begin : fmt_init_inputs
@@ -202,27 +202,34 @@ module fpnew_fma_multi #(
         .FpFormat    ( FpFormat ),
         .NumOperands ( 3        )
       ) i_fpnew_classifier (
-        .operands_i ( trimmed_ops                            ),
-        .is_boxed_i ( inp_pipe_is_boxed_q[NUM_INP_REGS][fmt] ),
-        .info_o     ( info_q[fmt]                            )
+        .operands_i ( trimmed_ops     ),
+        .is_boxed_i ( is_boxed_i[fmt] ),
+        .info_o     ( pre_info[fmt]   )
       );
       for (genvar op = 0; op < 3; op++) begin : gen_operands
-        assign trimmed_ops[op]       = operands_q[op][FP_WIDTH-1:0];
-        assign fmt_sign[fmt][op]     = operands_q[op][FP_WIDTH-1];
-        assign fmt_exponent[fmt][op] = signed'({1'b0, operands_q[op][MAN_BITS+:EXP_BITS]});
-        assign fmt_mantissa[fmt][op] = {info_q[fmt][op].is_normal, operands_q[op][MAN_BITS-1:0]} <<
-                                       (SUPER_MAN_BITS - MAN_BITS); // move to left of mantissa
+        assign trimmed_ops[op]           = operands_i[op][FP_WIDTH-1:0];
+        assign pre_fmt_sign[fmt][op]     = operands_i[op][FP_WIDTH-1];
+        assign pre_fmt_exponent[fmt][op] = signed'({1'b0, operands_i[op][MAN_BITS+:EXP_BITS]});
+        assign pre_fmt_mantissa[fmt][op] = {pre_info[fmt][op].is_normal, operands_i[op][MAN_BITS-1:0]} <<
+                                           (SUPER_MAN_BITS - MAN_BITS); // move to left of mantissa
       end
     end else begin : inactive_format
-      assign info_q[fmt]                 = '{default: fpnew_pkg::DONT_CARE}; // format disabled
-      assign fmt_sign[fmt]               = fpnew_pkg::DONT_CARE;             // format disabled
-      assign fmt_exponent[fmt]           = '{default: fpnew_pkg::DONT_CARE}; // format disabled
-      assign fmt_mantissa[fmt]           = '{default: fpnew_pkg::DONT_CARE}; // format disabled
+      assign pre_info[fmt]               = '{default: fpnew_pkg::DONT_CARE}; // format disabled
+      assign pre_fmt_sign[fmt]           = fpnew_pkg::DONT_CARE;             // format disabled
+      assign pre_fmt_exponent[fmt]       = '{default: fpnew_pkg::DONT_CARE}; // format disabled
+      assign pre_fmt_mantissa[fmt]       = '{default: fpnew_pkg::DONT_CARE}; // format disabled
     end
   end
 
   fp_t                 operand_a, operand_b, operand_c;
   fpnew_pkg::fp_info_t info_a,    info_b,    info_c;
+
+  assign operand_a = inp_pipe_operands_q[NUM_INP_REGS][0];
+  assign operand_b = inp_pipe_operands_q[NUM_INP_REGS][1];
+  assign operand_c = inp_pipe_operands_q[NUM_INP_REGS][2];
+  assign info_a    = inp_pipe_info_q[NUM_INP_REGS][0];
+  assign info_b    = inp_pipe_info_q[NUM_INP_REGS][1];
+  assign info_c    = inp_pipe_info_q[NUM_INP_REGS][2];
 
   // Operation selection and operand adjustment
   // | \c op_q  | \c op_mod_q | Operation Adjustment
@@ -239,38 +246,38 @@ module fpnew_fma_multi #(
   always_comb begin : op_select
 
     // Default assignments - packing-order-agnostic
-    operand_a = {fmt_sign[src_fmt_q ][0], fmt_exponent[src_fmt_q ][0], fmt_mantissa[src_fmt_q ][0]};
-    operand_b = {fmt_sign[src_fmt_q ][1], fmt_exponent[src_fmt_q ][1], fmt_mantissa[src_fmt_q ][1]};
-    operand_c = {fmt_sign[src2_fmt_q][2], fmt_exponent[src2_fmt_q][2], fmt_mantissa[src2_fmt_q][2]};
-    info_a    = info_q[src_fmt_q ][0];
-    info_b    = info_q[src_fmt_q ][1];
-    info_c    = info_q[src2_fmt_q][2];
+    pre_operand_a = {pre_fmt_sign[src_fmt_i ][0], pre_fmt_exponent[src_fmt_i ][0], pre_fmt_mantissa[src_fmt_i ][0]};
+    pre_operand_b = {pre_fmt_sign[src_fmt_i ][1], pre_fmt_exponent[src_fmt_i ][1], pre_fmt_mantissa[src_fmt_i ][1]};
+    pre_operand_c = {pre_fmt_sign[src2_fmt_i][2], pre_fmt_exponent[src2_fmt_i][2], pre_fmt_mantissa[src2_fmt_i][2]};
+    pre_info_a    = pre_info[src_fmt_i ][0];
+    pre_info_b    = pre_info[src_fmt_i ][1];
+    pre_info_c    = pre_info[src2_fmt_i][2];
 
     // op_mod_q inverts sign of operand C
-    operand_c.sign = operand_c.sign ^ inp_pipe_op_mod_q[NUM_INP_REGS];
+    pre_operand_c.sign = pre_operand_c.sign ^ op_mod_i;
 
-    unique case (inp_pipe_op_q[NUM_INP_REGS])
+    unique case (op_i)
       fpnew_pkg::FMADD:  ; // do nothing
-      fpnew_pkg::FNMSUB: operand_a.sign = ~operand_a.sign; // invert sign of product
+      fpnew_pkg::FNMSUB: pre_operand_a.sign = ~pre_operand_a.sign; // invert sign of product
       fpnew_pkg::ADD,
       fpnew_pkg::ADDS: begin // Set multiplicand to +1
-        operand_a = '{sign: 1'b0, exponent: fpnew_pkg::bias(src_fmt_q), mantissa: '0};
-        info_a    = '{is_normal: 1'b1, is_boxed: 1'b1, default: 1'b0}; //normal, boxed value.
+        pre_operand_a = '{sign: 1'b0, exponent: fpnew_pkg::bias(src_fmt_i), mantissa: '0};
+        pre_info_a    = '{is_normal: 1'b1, is_boxed: 1'b1, default: 1'b0}; //normal, boxed value.
       end
       fpnew_pkg::MUL: begin // Set addend to +0 or -0, depending whether the rounding mode is RDN
-        if (inp_pipe_rnd_mode_q[NUM_INP_REGS] == fpnew_pkg::RDN)
-          operand_c = '{sign: 1'b0, exponent: '0, mantissa: '0};
+        if (rnd_mode_i == fpnew_pkg::RDN)
+          pre_operand_c = '{sign: 1'b0, exponent: '0, mantissa: '0};
         else
-          operand_c = '{sign: 1'b1, exponent: '0, mantissa: '0};
-        info_c    = '{is_zero: 1'b1, is_boxed: 1'b1, default: 1'b0}; //zero, boxed value.
+          pre_operand_c = '{sign: 1'b1, exponent: '0, mantissa: '0};
+        pre_info_c    = '{is_zero: 1'b1, is_boxed: 1'b1, default: 1'b0}; //zero, boxed value.
       end
       default: begin // propagate don't cares
-        operand_a  = '{default: fpnew_pkg::DONT_CARE};
-        operand_b  = '{default: fpnew_pkg::DONT_CARE};
-        operand_c  = '{default: fpnew_pkg::DONT_CARE};
-        info_a     = '{default: fpnew_pkg::DONT_CARE};
-        info_b     = '{default: fpnew_pkg::DONT_CARE};
-        info_c     = '{default: fpnew_pkg::DONT_CARE};
+        pre_operand_a  = '{default: fpnew_pkg::DONT_CARE};
+        pre_operand_b  = '{default: fpnew_pkg::DONT_CARE};
+        pre_operand_c  = '{default: fpnew_pkg::DONT_CARE};
+        pre_info_a     = '{default: fpnew_pkg::DONT_CARE};
+        pre_info_b     = '{default: fpnew_pkg::DONT_CARE};
+        pre_info_c     = '{default: fpnew_pkg::DONT_CARE};
       end
     endcase
   end
@@ -452,17 +459,19 @@ module fpnew_fma_multi #(
   // ------------------
   // Product data path
   // ------------------
-  logic [PRECISION_BITS-1:0]   mantissa_a, mantissa_b, mantissa_c;
+  logic [PRECISION_BITS-1:0]   pre_mantissa_a, pre_mantissa_b, mantissa_c;
   logic [2*PRECISION_BITS-1:0] product;             // the p*p product is 2p bits wide
   logic [3*PRECISION_BITS+3:0] product_shifted;     // addends are 3p+4 bit wide (including G/R)
 
+  assign product = inp_pipe_product_q[NUM_INP_REGS];
+
   // Add implicit bits to mantissae
-  assign mantissa_a = {info_a.is_normal, operand_a.mantissa};
-  assign mantissa_b = {info_b.is_normal, operand_b.mantissa};
-  assign mantissa_c = {info_c.is_normal, operand_c.mantissa};
+  assign pre_mantissa_a = {pre_info_a.is_normal, pre_operand_a.mantissa};
+  assign pre_mantissa_b = {pre_info_b.is_normal, pre_operand_b.mantissa};
+  assign mantissa_c     = {    info_c.is_normal,     operand_c.mantissa};
 
   // Mantissa multiplier (a*b)
-  assign product = mantissa_a * mantissa_b;
+  assign pre_product = pre_mantissa_a * pre_mantissa_b;
 
   // Product is placed into a 3p+4 bit wide vector, padded with 2 bits for round and sticky:
   // | 000...000 | product | RS |
