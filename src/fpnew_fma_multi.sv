@@ -533,7 +533,7 @@ module fpnew_fma_multi #(
   // Internal pipeline
   // ---------------
   // Pipeline output signals as non-arrays
-  logic                          effective_subtraction_q;
+  logic                          effective_subtraction_q, effective_subtraction_q2;
   logic signed [EXP_WIDTH-1:0]   exponent_product_q;
   logic signed [EXP_WIDTH-1:0]   exponent_difference_q;
   logic signed [EXP_WIDTH-1:0]   tentative_exponent_q;
@@ -541,8 +541,8 @@ module fpnew_fma_multi #(
   logic                          sticky_before_add_q;
   logic [3*PRECISION_BITS+3:0]   sum_q;
   logic                          final_sign_q;
-  fpnew_pkg::fp_format_e         dst_fmt_q2;
-  fpnew_pkg::roundmode_e         rnd_mode_q;
+  fpnew_pkg::fp_format_e         dst_fmt_q2, dst_fmt_q3;
+  fpnew_pkg::roundmode_e         rnd_mode_q, rnd_mode_q2;
   logic                          result_is_special_q;
   fp_t                           special_result_q;
   fpnew_pkg::status_t            special_status_q;
@@ -626,12 +626,8 @@ module fpnew_fma_multi #(
   assign addend_shamt_q          = mid_pipe_add_shamt_q[NUM_MID_REGS];
   assign sticky_before_add_q     = mid_pipe_sticky_q[NUM_MID_REGS];
   assign sum_q                   = mid_pipe_sum_q[NUM_MID_REGS];
-  assign final_sign_q            = mid_pipe_final_sign_q[NUM_MID_REGS];
   assign rnd_mode_q              = mid_pipe_rnd_mode_q[NUM_MID_REGS];
   assign dst_fmt_q2              = mid_pipe_dst_fmt_q[NUM_MID_REGS];
-  assign result_is_special_q     = mid_pipe_res_is_spec_q[NUM_MID_REGS];
-  assign special_result_q        = mid_pipe_spec_res_q[NUM_MID_REGS];
-  assign special_status_q        = mid_pipe_spec_stat_q[NUM_MID_REGS];
 
   // --------------
   // Normalization
@@ -720,6 +716,11 @@ module fpnew_fma_multi #(
   // ----------------------------
   // Rounding and classification
   // ----------------------------
+  logic [PRECISION_BITS:0]     final_mantissa_q;    // final mantissa before rounding with round bit
+  logic                        weird_uf_logic_q;
+  logic                        sticky_after_norm_q; // sticky bit after normalization
+  logic signed [EXP_WIDTH-1:0] final_exponent_q;
+
   logic                                     pre_round_sign;
   logic [SUPER_EXP_BITS+SUPER_MAN_BITS-1:0] pre_round_abs; // absolute value of result before rounding
   logic [1:0]                               round_sticky_bits;
@@ -738,8 +739,8 @@ module fpnew_fma_multi #(
   logic                                     result_zero;
 
   // Classification before round. RISC-V mandates checking underflow AFTER rounding!
-  assign of_before_round = final_exponent >= 2**(fpnew_pkg::exp_bits(dst_fmt_q2))-1; // infinity exponent is all ones
-  assign uf_before_round = final_exponent == 0;               // exponent for subnormals capped to 0
+  assign of_before_round = final_exponent_q >= 2**(fpnew_pkg::exp_bits(dst_fmt_q3))-1; // infinity exponent is all ones
+  assign uf_before_round = final_exponent_q == 0;               // exponent for subnormals capped to 0
 
   // Pack exponent and mantissa into proper rounding form
   for (genvar fmt = 0; fmt < int'(NUM_FORMATS); fmt++) begin : gen_res_assemble
@@ -752,21 +753,21 @@ module fpnew_fma_multi #(
 
     if (FpFmtConfig[fmt]) begin : active_format
 
-      assign pre_round_exponent = (of_before_round) ? 2**EXP_BITS-2 : final_exponent[EXP_BITS-1:0];
-      assign pre_round_mantissa = (of_before_round) ? '1 : final_mantissa[SUPER_MAN_BITS-:MAN_BITS];
+      assign pre_round_exponent = (of_before_round) ? 2**EXP_BITS-2 : final_exponent_q[EXP_BITS-1:0];
+      assign pre_round_mantissa = (of_before_round) ? '1 : final_mantissa_q[SUPER_MAN_BITS-:MAN_BITS];
       // Assemble result before rounding. In case of overflow, the largest normal value is set.
       assign fmt_pre_round_abs[fmt] = {pre_round_exponent, pre_round_mantissa}; // 0-extend
 
       // Round bit is after mantissa (1 in case of overflow for rounding)
-      assign fmt_round_sticky_bits[fmt][1] = final_mantissa[SUPER_MAN_BITS-MAN_BITS] |
+      assign fmt_round_sticky_bits[fmt][1] = final_mantissa_q[SUPER_MAN_BITS-MAN_BITS] |
                                              of_before_round;
 
       // remaining bits in mantissa to sticky (1 in case of overflow for rounding)
       if (MAN_BITS < SUPER_MAN_BITS) begin : narrow_sticky
-        assign fmt_round_sticky_bits[fmt][0] = (| final_mantissa[SUPER_MAN_BITS-MAN_BITS-1:0]) |
-                                               sticky_after_norm | of_before_round;
+        assign fmt_round_sticky_bits[fmt][0] = (| final_mantissa_q[SUPER_MAN_BITS-MAN_BITS-1:0]) |
+                                               sticky_after_norm_q | of_before_round;
       end else begin : normal_sticky
-        assign fmt_round_sticky_bits[fmt][0] = sticky_after_norm | of_before_round;
+        assign fmt_round_sticky_bits[fmt][0] = sticky_after_norm_q | of_before_round;
       end
     end else begin : inactive_format
       assign fmt_pre_round_abs[fmt] = '{default: fpnew_pkg::DONT_CARE};
@@ -776,23 +777,23 @@ module fpnew_fma_multi #(
 
   // Assemble result before rounding. In case of overflow, the largest normal value is set.
   assign pre_round_sign     = final_sign_q;
-  assign pre_round_abs      = fmt_pre_round_abs[dst_fmt_q2];
+  assign pre_round_abs      = fmt_pre_round_abs[dst_fmt_q3];
 
   // In case of overflow, the round and sticky bits are set for proper rounding
-  assign round_sticky_bits  = fmt_round_sticky_bits[dst_fmt_q2];
+  assign round_sticky_bits  = fmt_round_sticky_bits[dst_fmt_q3];
 
   // Perform the rounding
   fpnew_rounding #(
     .AbsWidth ( SUPER_EXP_BITS + SUPER_MAN_BITS )
   ) i_fpnew_rounding (
-    .abs_value_i             ( pre_round_abs           ),
-    .sign_i                  ( pre_round_sign          ),
-    .round_sticky_bits_i     ( round_sticky_bits       ),
-    .rnd_mode_i              ( rnd_mode_q              ),
-    .effective_subtraction_i ( effective_subtraction_q ),
-    .abs_rounded_o           ( rounded_abs             ),
-    .sign_o                  ( rounded_sign            ),
-    .exact_zero_o            ( result_zero             )
+    .abs_value_i             ( pre_round_abs            ),
+    .sign_i                  ( pre_round_sign           ),
+    .round_sticky_bits_i     ( round_sticky_bits        ),
+    .rnd_mode_i              ( rnd_mode_q2              ),
+    .effective_subtraction_i ( effective_subtraction_q2 ),
+    .abs_rounded_o           ( rounded_abs              ),
+    .sign_o                  ( rounded_sign             ),
+    .exact_zero_o            ( result_zero              )
   );
 
   logic [NUM_FORMATS-1:0][WIDTH-1:0] fmt_result;
@@ -807,8 +808,8 @@ module fpnew_fma_multi #(
       always_comb begin : post_process
         // detect of / uf        
         fmt_uf_after_round[fmt] = (rounded_abs[EXP_BITS+MAN_BITS-1:MAN_BITS] == '0) // denormal
-        || ((pre_round_abs[EXP_BITS+MAN_BITS-1:MAN_BITS] == '0) && (rounded_abs[EXP_BITS+MAN_BITS-1:MAN_BITS] == 1) && 
-              ((round_sticky_bits != 2'b11) || (!sum_sticky_bits[MAN_BITS*2 + 4] && ((rnd_mode_q == fpnew_pkg::RNE) || (rnd_mode_q == fpnew_pkg::RMM)))));
+        || ((pre_round_abs[EXP_BITS+MAN_BITS-1:MAN_BITS] == '0) && (rounded_abs[EXP_BITS+MAN_BITS-1:MAN_BITS] == 1) &&
+              ((round_sticky_bits != 2'b11) || weird_uf_logic_q));
         fmt_of_after_round[fmt] = rounded_abs[EXP_BITS+MAN_BITS-1:MAN_BITS] == '1; // inf exp.
 
         // Assemble regular result, nan box short ones.
@@ -823,8 +824,8 @@ module fpnew_fma_multi #(
   end
 
   // Classification after rounding select by destination format
-  assign uf_after_round = fmt_uf_after_round[dst_fmt_q2];
-  assign of_after_round = fmt_of_after_round[dst_fmt_q2];
+  assign uf_after_round = fmt_uf_after_round[dst_fmt_q3];
+  assign of_after_round = fmt_of_after_round[dst_fmt_q3];
 
 
   // -----------------
@@ -834,41 +835,65 @@ module fpnew_fma_multi #(
   fpnew_pkg::status_t   regular_status;
 
   // Assemble regular result
-  assign regular_result = fmt_result[dst_fmt_q2];
+  assign regular_result = fmt_result[dst_fmt_q3];
   assign regular_status.NV = 1'b0; // only valid cases are handled in regular path
   assign regular_status.DZ = 1'b0; // no divisions
   assign regular_status.OF = of_before_round | of_after_round;   // rounding can introduce overflow
   assign regular_status.UF = uf_after_round & regular_status.NX; // only inexact results raise UF
   assign regular_status.NX = (| round_sticky_bits) | of_before_round | of_after_round;
 
-  // Final results for output pipeline
-  logic [WIDTH-1:0]   result_d;
-  fpnew_pkg::status_t status_d;
-
   // Select output depending on special case detection
-  assign result_d = result_is_special_q ? special_result_q : regular_result;
-  assign status_d = result_is_special_q ? special_status_q : regular_status;
+  assign result_o = result_is_special_q ? special_result_q : regular_result;
+  assign status_o = result_is_special_q ? special_status_q : regular_status;
 
   // ----------------
   // Output Pipeline
   // ----------------
   // Output pipeline signals, index i holds signal after i register stages
-  logic               [0:NUM_OUT_REGS][WIDTH-1:0] out_pipe_result_q;
-  fpnew_pkg::status_t [0:NUM_OUT_REGS]            out_pipe_status_q;
-  TagType             [0:NUM_OUT_REGS]            out_pipe_tag_q;
-  logic               [0:NUM_OUT_REGS]            out_pipe_mask_q;
-  AuxType             [0:NUM_OUT_REGS]            out_pipe_aux_q;
-  logic               [0:NUM_OUT_REGS]            out_pipe_valid_q;
+  logic                  [0:NUM_OUT_REGS]                   out_pipe_eff_sub_q;
+  logic                  [0:NUM_OUT_REGS][PRECISION_BITS:0] out_pipe_final_mantissa_q;
+  logic                  [0:NUM_OUT_REGS]                   out_pipe_weird_uf_logic_q;
+  logic                  [0:NUM_OUT_REGS]                   out_pipe_sticky_after_norm_q;
+  logic signed           [0:NUM_OUT_REGS][EXP_WIDTH-1:0]    out_pipe_final_exponent_q;
+  logic signed           [0:NUM_OUT_REGS]                   out_pipe_final_sign_q;
+  fpnew_pkg::roundmode_e [0:NUM_OUT_REGS]                   out_pipe_rnd_mode_q;
+  fpnew_pkg::fp_format_e [0:NUM_OUT_REGS]                   out_pipe_dst_fmt_q;
+  logic                  [0:NUM_OUT_REGS]                   out_pipe_res_is_spec_q;
+  fp_t                   [0:NUM_OUT_REGS]                   out_pipe_spec_res_q;
+  fpnew_pkg::status_t    [0:NUM_OUT_REGS]                   out_pipe_spec_stat_q;
+  TagType                [0:NUM_OUT_REGS]                   out_pipe_tag_q;
+  logic                  [0:NUM_OUT_REGS]                   out_pipe_mask_q;
+  AuxType                [0:NUM_OUT_REGS]                   out_pipe_aux_q;
+  logic                  [0:NUM_OUT_REGS]                   out_pipe_valid_q;
   // Ready signal is combinatorial for all stages
   logic [0:NUM_OUT_REGS] out_pipe_ready;
 
+  logic [NUM_FORMATS-1:0] weird_uf_logic;
+  for (genvar fmt = 0; fmt < int'(NUM_FORMATS); fmt++) begin : gen_weird_uf_logic
+    localparam int unsigned MAN_BITS = fpnew_pkg::man_bits(fpnew_pkg::fp_format_e'(fmt));
+    if (FpFmtConfig[fmt]) begin : active_format
+      assign weird_uf_logic[fmt] = !sum_sticky_bits[MAN_BITS*2 + 4] && ((rnd_mode_q == fpnew_pkg::RNE) || (rnd_mode_q == fpnew_pkg::RMM));
+    end else begin
+      assign weird_uf_logic[fmt] = 1'b0;
+    end
+  end
+
   // Input stage: First element of pipeline is taken from inputs
-  assign out_pipe_result_q[0] = result_d;
-  assign out_pipe_status_q[0] = status_d;
-  assign out_pipe_tag_q[0]    = mid_pipe_tag_q[NUM_MID_REGS];
-  assign out_pipe_mask_q[0]   = mid_pipe_mask_q[NUM_MID_REGS];
-  assign out_pipe_aux_q[0]    = mid_pipe_aux_q[NUM_MID_REGS];
-  assign out_pipe_valid_q[0]  = mid_pipe_valid_q[NUM_MID_REGS];
+  assign out_pipe_eff_sub_q[0]           = mid_pipe_eff_sub_q[NUM_MID_REGS];
+  assign out_pipe_final_mantissa_q[0]    = final_mantissa;
+  assign out_pipe_weird_uf_logic_q[0]    = weird_uf_logic[dst_fmt_q2];
+  assign out_pipe_sticky_after_norm_q[0] = sticky_after_norm;
+  assign out_pipe_final_exponent_q[0]    = final_exponent;
+  assign out_pipe_final_sign_q[0]        = mid_pipe_final_sign_q[NUM_MID_REGS];
+  assign out_pipe_rnd_mode_q[0]          = mid_pipe_rnd_mode_q[NUM_MID_REGS];
+  assign out_pipe_dst_fmt_q[0]           = mid_pipe_dst_fmt_q[NUM_MID_REGS];
+  assign out_pipe_res_is_spec_q[0]       = mid_pipe_res_is_spec_q[NUM_MID_REGS];
+  assign out_pipe_spec_res_q[0]          = mid_pipe_spec_res_q[NUM_MID_REGS];
+  assign out_pipe_spec_stat_q[0]         = mid_pipe_spec_stat_q[NUM_MID_REGS];
+  assign out_pipe_tag_q[0]               = mid_pipe_tag_q[NUM_MID_REGS];
+  assign out_pipe_mask_q[0]              = mid_pipe_mask_q[NUM_MID_REGS];
+  assign out_pipe_aux_q[0]               = mid_pipe_aux_q[NUM_MID_REGS];
+  assign out_pipe_valid_q[0]             = mid_pipe_valid_q[NUM_MID_REGS];
   // Input stage: Propagate pipeline ready signal to inside pipe
   assign mid_pipe_ready[NUM_MID_REGS] = out_pipe_ready[0];
   // Generate the register stages
@@ -884,17 +909,36 @@ module fpnew_fma_multi #(
     // Enable register if pipleine ready and a valid data item is present
     assign reg_ena = (out_pipe_ready[i] & out_pipe_valid_q[i]) | reg_ena_i[NUM_INP_REGS + NUM_MID_REGS + i];
     // Generate the pipeline registers within the stages, use enable-registers
-    `FFL(out_pipe_result_q[i+1], out_pipe_result_q[i], reg_ena, '0)
-    `FFL(out_pipe_status_q[i+1], out_pipe_status_q[i], reg_ena, '0)
-    `FFL(out_pipe_tag_q[i+1],    out_pipe_tag_q[i],    reg_ena, TagType'('0))
-    `FFL(out_pipe_mask_q[i+1],   out_pipe_mask_q[i],   reg_ena, '0)
-    `FFL(out_pipe_aux_q[i+1],    out_pipe_aux_q[i],    reg_ena, AuxType'('0))
+    `FFL(out_pipe_eff_sub_q[i+1],           out_pipe_eff_sub_q[i],           reg_ena, '0)
+    `FFL(out_pipe_final_mantissa_q[i+1],    out_pipe_final_mantissa_q[i],    reg_ena, '0)
+    `FFL(out_pipe_weird_uf_logic_q[i+1],    out_pipe_weird_uf_logic_q[i],    reg_ena, '0)
+    `FFL(out_pipe_sticky_after_norm_q[i+1], out_pipe_sticky_after_norm_q[i], reg_ena, '0)
+    `FFL(out_pipe_final_exponent_q[i+1],    out_pipe_final_exponent_q[i],    reg_ena, '0)
+    `FFL(out_pipe_final_sign_q[i+1],        out_pipe_final_sign_q[i],        reg_ena, '0)
+    `FFL(out_pipe_rnd_mode_q[i+1],          out_pipe_rnd_mode_q[i],          reg_ena, fpnew_pkg::RNE)
+    `FFL(out_pipe_dst_fmt_q[i+1],           out_pipe_dst_fmt_q[i],           reg_ena, fpnew_pkg::fp_format_e'(0))
+    `FFL(out_pipe_res_is_spec_q[i+1],       out_pipe_res_is_spec_q[i],       reg_ena, '0)
+    `FFL(out_pipe_spec_res_q[i+1],          out_pipe_spec_res_q[i],          reg_ena, '0)
+    `FFL(out_pipe_spec_stat_q[i+1],         out_pipe_spec_stat_q[i],         reg_ena, '0)
+    `FFL(out_pipe_tag_q[i+1],               out_pipe_tag_q[i],               reg_ena, TagType'('0))
+    `FFL(out_pipe_mask_q[i+1],              out_pipe_mask_q[i],              reg_ena, '0)
+    `FFL(out_pipe_aux_q[i+1],               out_pipe_aux_q[i],               reg_ena, AuxType'('0))
   end
   // Output stage: Ready travels backwards from output side, driven by downstream circuitry
   assign out_pipe_ready[NUM_OUT_REGS] = out_ready_i;
   // Output stage: assign module outputs
-  assign result_o        = out_pipe_result_q[NUM_OUT_REGS];
-  assign status_o        = out_pipe_status_q[NUM_OUT_REGS];
+  assign effective_subtraction_q2 = out_pipe_eff_sub_q[NUM_OUT_REGS];
+  assign final_mantissa_q         = out_pipe_final_mantissa_q[NUM_OUT_REGS];
+  assign weird_uf_logic_q         = out_pipe_weird_uf_logic_q[NUM_OUT_REGS];
+  assign sticky_after_norm_q      = out_pipe_sticky_after_norm_q[NUM_OUT_REGS];
+  assign final_exponent_q         = out_pipe_final_exponent_q[NUM_OUT_REGS];
+  assign final_sign_q             = out_pipe_final_sign_q[NUM_OUT_REGS];
+  assign dst_fmt_q3               = out_pipe_dst_fmt_q[NUM_OUT_REGS];
+  assign rnd_mode_q2              = out_pipe_rnd_mode_q[NUM_OUT_REGS];
+  assign result_is_special_q      = out_pipe_res_is_spec_q[NUM_OUT_REGS];
+  assign special_result_q         = out_pipe_spec_res_q[NUM_OUT_REGS];
+  assign special_status_q         = out_pipe_spec_stat_q[NUM_OUT_REGS];
+
   assign extension_bit_o = 1'b1; // always NaN-Box result
   assign tag_o           = out_pipe_tag_q[NUM_OUT_REGS];
   assign mask_o          = out_pipe_mask_q[NUM_OUT_REGS];
