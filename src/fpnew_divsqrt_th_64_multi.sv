@@ -128,14 +128,14 @@ module fpnew_divsqrt_th_64_multi #(
     // Enable register if pipleine ready and a valid data item is present
     assign reg_ena = (inp_pipe_ready[i] & inp_pipe_valid_q[i]) | reg_ena_i[i];
     // Generate the pipeline registers within the stages, use enable-registers
-    `FFL(inp_pipe_operands_q[i+1], inp_pipe_operands_q[i], reg_ena, '0)
-    `FFL(inp_pipe_rnd_mode_q[i+1], inp_pipe_rnd_mode_q[i], reg_ena, fpnew_pkg::RNE)
-    `FFL(inp_pipe_op_q[i+1],       inp_pipe_op_q[i],       reg_ena, fpnew_pkg::FMADD)
-    `FFL(inp_pipe_dst_fmt_q[i+1],  inp_pipe_dst_fmt_q[i],  reg_ena, fpnew_pkg::fp_format_e'(0))
-    `FFL(inp_pipe_tag_q[i+1],      inp_pipe_tag_q[i],      reg_ena, TagType'('0))
-    `FFL(inp_pipe_mask_q[i+1],     inp_pipe_mask_q[i],     reg_ena, '0)
-    `FFL(inp_pipe_aux_q[i+1],      inp_pipe_aux_q[i],      reg_ena, AuxType'('0))
-    `FFL(inp_pipe_vec_op_q[i+1],   inp_pipe_vec_op_q[i],   reg_ena, AuxType'('0))
+    `FFLNR(inp_pipe_operands_q[i+1], inp_pipe_operands_q[i], reg_ena, clk_i)
+    `FFLNR(inp_pipe_rnd_mode_q[i+1], inp_pipe_rnd_mode_q[i], reg_ena, clk_i)
+    `FFLNR(inp_pipe_op_q[i+1],       inp_pipe_op_q[i],       reg_ena, clk_i)
+    `FFLNR(inp_pipe_dst_fmt_q[i+1],  inp_pipe_dst_fmt_q[i],  reg_ena, clk_i)
+    `FFLNR(inp_pipe_tag_q[i+1],      inp_pipe_tag_q[i],      reg_ena, clk_i)
+    `FFLNR(inp_pipe_mask_q[i+1],     inp_pipe_mask_q[i],     reg_ena, clk_i)
+    `FFLNR(inp_pipe_aux_q[i+1],      inp_pipe_aux_q[i],      reg_ena, clk_i)
+    `FFLNR(inp_pipe_vec_op_q[i+1],   inp_pipe_vec_op_q[i],   reg_ena, clk_i)
   end
   // Output stage: assign selected pipe outputs to signals for later use
   assign operands_q = inp_pipe_operands_q[NUM_INP_REGS];
@@ -479,11 +479,11 @@ module fpnew_divsqrt_th_64_multi #(
     // Enable register if pipleine ready and a valid data item is present
     assign reg_ena = (out_pipe_ready[i] & out_pipe_valid_q[i]) | reg_ena_i[NUM_INP_REGS + i];
     // Generate the pipeline registers within the stages, use enable-registers
-    `FFL(out_pipe_result_q[i+1], out_pipe_result_q[i], reg_ena, '0)
-    `FFL(out_pipe_status_q[i+1], out_pipe_status_q[i], reg_ena, '0)
-    `FFL(out_pipe_tag_q[i+1],    out_pipe_tag_q[i],    reg_ena, TagType'('0))
-    `FFL(out_pipe_mask_q[i+1],   out_pipe_mask_q[i],   reg_ena, '0)
-    `FFL(out_pipe_aux_q[i+1],    out_pipe_aux_q[i],    reg_ena, AuxType'('0))
+    `FFLNR(out_pipe_result_q[i+1], out_pipe_result_q[i], reg_ena, clk_i)
+    `FFLNR(out_pipe_status_q[i+1], out_pipe_status_q[i], reg_ena, clk_i)
+    `FFLNR(out_pipe_tag_q[i+1],    out_pipe_tag_q[i],    reg_ena, clk_i)
+    `FFLNR(out_pipe_mask_q[i+1],   out_pipe_mask_q[i],   reg_ena, clk_i)
+    `FFLNR(out_pipe_aux_q[i+1],    out_pipe_aux_q[i],    reg_ena, clk_i)
   end
   // Output stage: Ready travels backwards from output side, driven by downstream circuitry
   assign out_pipe_ready[NUM_OUT_REGS] = out_ready_i;

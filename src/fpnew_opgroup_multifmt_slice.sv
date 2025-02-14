@@ -511,8 +511,8 @@ FP8. Please use the PULP DivSqrt unit when in need of div/sqrt operations on FP8
       // Enable register if pipleine ready and a valid data item is present
       assign reg_ena = (byp_pipe_ready[i] & byp_pipe_valid_q[i]) | reg_ena_i[i];
       // Generate the pipeline registers within the stages, use enable-registers
-      `FFL(byp_pipe_target_q[i+1],  byp_pipe_target_q[i],  reg_ena, '0)
-      `FFL(byp_pipe_aux_q[i+1],     byp_pipe_aux_q[i],     reg_ena, '0)
+      `FFLNR(byp_pipe_target_q[i+1],  byp_pipe_target_q[i],  reg_ena, clk_i)
+      `FFLNR(byp_pipe_aux_q[i+1],     byp_pipe_aux_q[i],     reg_ena, clk_i)
     end
     // Output stage: Ready travels backwards from output side, driven by downstream circuitry
     assign byp_pipe_ready[NumPipeRegs] = out_ready_i & result_is_vector;
